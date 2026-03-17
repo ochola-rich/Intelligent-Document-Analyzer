@@ -5,9 +5,11 @@ app = FastAPI()
 
 @app.post("/upload")
 async def upload_pdf(request: Request):
-    contents = await request.body()
-    print(len(contents))
-    return {"status": "received"}
+    with open("/tmp/file.pdf", "wb") as f:
+        async for chunk in request.stream():
+            f.write(chunk)
+
+    return {"status": "saved"}
     
 @app.get("/", response_class=PlainTextResponse)
 def something()-> str:
