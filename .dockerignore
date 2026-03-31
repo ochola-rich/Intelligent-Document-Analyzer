@@ -1,0 +1,9 @@
+.git
+.gitignore
+.codex
+**/__pycache__
+**/.pytest_cache
+**/target
+**/.mvn
+**/.idea
+**/.vscode

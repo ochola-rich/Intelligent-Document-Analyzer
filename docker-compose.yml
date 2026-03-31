@@ -1,0 +1,73 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ida-postgres
+    environment:
+      POSTGRES_DB: filesanalyzer_db
+      POSTGRES_USER: blaq
+      POSTGRES_PASSWORD: Ochola@254
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blaq -d filesanalyzer_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  java-analytics:
+    build:
+      context: ./filesanalyzer
+    container_name: ida-java-analytics
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: 8082
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/filesanalyzer_db
+      SPRING_DATASOURCE_USERNAME: blaq
+      SPRING_DATASOURCE_PASSWORD: Ochola@254
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8082/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 25s
+
+  ml-service:
+    build:
+      context: ./ml-service
+    container_name: ida-ml-service
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+
+  api-gateway:
+    build:
+      context: ./Api-Gateway
+    container_name: ida-api-gateway
+    depends_on:
+      ml-service:
+        condition: service_healthy
+    environment:
+      WORD_SERVICE_URL: http://ml-service:8081/upload
+      PDF_SERVICE_URL: http://ml-service:8081/upload
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+
+volumes:
+  postgres_data:
