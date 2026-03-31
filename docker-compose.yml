@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: ida-postgres
     environment:
       POSTGRES_DB: filesanalyzer_db
@@ -10,6 +10,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./db/init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U blaq -d filesanalyzer_db"]
       interval: 10s
@@ -41,6 +42,8 @@ services:
     build:
       context: ./ml-service
     container_name: ida-ml-service
+    environment:
+      DATABASE_URL: postgresql://blaq:Ochola%40254@postgres:5432/filesanalyzer_db
     ports:
       - "8081:8081"
     healthcheck:
@@ -68,6 +71,18 @@ services:
       timeout: 5s
       retries: 8
       start_period: 10s
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: ida-frontend
+    environment:
+      VITE_API_BASE: http://localhost:8080
+    ports:
+      - "5173:5173"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
 
 volumes:
   postgres_data:
