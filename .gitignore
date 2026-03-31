@@ -16,3 +16,5 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+ml-service/debug_pipeline.ipynb
+ml-service/vector_cache.pkl

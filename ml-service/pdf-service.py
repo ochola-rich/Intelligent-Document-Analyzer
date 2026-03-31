@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 from processor import pdf_to_markdown_chunks
+import vector
 
 app = FastAPI()
 
@@ -10,7 +11,10 @@ async def upload_pdf(request: Request):
         async for chunk in request.stream():
             f.write(chunk)
     processed_pages = pdf_to_markdown_chunks("/tmp/file.pdf")
-
+    embeddings, data_chunks = vector.generate_bge_embeddings(processed_pages)
+    print(f"Generated {len(embeddings)} embeddings for {len(data_chunks)} chunks")
+    inserted_rows = vector.save_embeddings_to_pgvector(embeddings, data_chunks)
+    print(f"Inserted {inserted_rows} rows into pgvector")
     return {"status": "saved", "pages": len(processed_pages)}
 
 
