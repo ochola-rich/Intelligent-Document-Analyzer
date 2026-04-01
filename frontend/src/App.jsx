@@ -11,7 +11,8 @@ import {
   Clock,
   AlertCircle,
   Send,
-  Loader2
+  Loader2,
+  Info
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080';
@@ -22,6 +23,7 @@ const App = () => {
   const [query, setQuery] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [chatHistory, setChatHistory] = useState([]);
+  const [accuracyLevel, setAccuracyLevel] = useState('medium');
   const chatEndRef = useRef(null);
 
   useEffect(() => {
@@ -109,15 +111,49 @@ const App = () => {
     setQuery('');
     setIsTyping(true);
 
-    // Placeholder: wire to real RAG endpoint when available.
-    setTimeout(() => {
+    try {
+      const res = await fetch(`${API_BASE}/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query,
+          min_similarity:
+            accuracyLevel === 'low'
+              ? 0.25
+              : accuracyLevel === 'medium'
+              ? 0.4
+              : accuracyLevel === 'high'
+              ? 0.6
+              : 0.8
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error('Search failed');
+      }
+
+      const data = await res.json();
+      const results = Array.isArray(data.results) ? data.results : [];
+      const assistantMessage = results.length
+        ? {
+            role: 'assistant',
+            type: 'search',
+            results: results.slice(0, 5)
+          }
+        : {
+            role: 'assistant',
+            content: 'No relevant results found.'
+          };
+      setChatHistory((prev) => [...prev, assistantMessage]);
+    } catch (err) {
       const assistantMessage = {
         role: 'assistant',
-        content: 'RAG endpoint not wired yet. Upload documents first to build your knowledge base.'
+        content: 'Search failed. Please try again after verifying the backend is running.'
       };
       setChatHistory((prev) => [...prev, assistantMessage]);
+    } finally {
       setIsTyping(false);
-    }, 800);
+    }
   };
 
   const StatusBadge = ({ status }) => {
@@ -285,7 +321,31 @@ const App = () => {
                             : 'bg-slate-100 text-slate-800 rounded-tl-none'
                         }`}
                       >
-                        <p className="text-sm leading-relaxed">{msg.content}</p>
+                        {msg.type === 'search' ? (
+                          <div className="text-sm leading-relaxed space-y-3">
+                            <p className="text-xs uppercase tracking-wide text-slate-500">Top Matches</p>
+                            <div className="space-y-3">
+                              {msg.results.map((item, rIdx) => {
+                                const page = item?.metadata?.page ? `p.${item.metadata.page}` : 'p.?';
+                                const source = item?.metadata?.source || 'unknown source';
+                                const score =
+                                  typeof item.similarity === 'number'
+                                    ? `${(item.similarity * 100).toFixed(1)}%`
+                                    : 'n/a';
+                                return (
+                                  <div key={rIdx} className="rounded-xl border border-slate-200 bg-white p-3 text-slate-800">
+                                    <div className="text-xs text-slate-500 mb-1">
+                                      {source} • {page} • score {score}
+                                    </div>
+                                    <div className="text-sm whitespace-pre-wrap">{item.content}</div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -315,6 +375,26 @@ const App = () => {
                     >
                       <Send size={18} />
                     </button>
+                  </div>
+                  <div className="mt-3 flex items-center gap-2 text-xs text-slate-500">
+                    <label className="font-semibold text-slate-600" htmlFor="accuracy-select">Accuracy</label>
+                    <span
+                      title="Controls the minimum similarity: Low (0.25), Medium (0.4), High (0.6), Very High (0.8)"
+                      className="text-slate-400 hover:text-slate-600 cursor-help"
+                    >
+                      <Info size={14} />
+                    </span>
+                    <select
+                      id="accuracy-select"
+                      value={accuracyLevel}
+                      onChange={(e) => setAccuracyLevel(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs text-slate-700"
+                    >
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="very-high">Very High</option>
+                    </select>
                   </div>
                   <p className="text-[10px] text-center text-slate-400 mt-2">
                     Powered by Python RAG Core & Go API Gateway

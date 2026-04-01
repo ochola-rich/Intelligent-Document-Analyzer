@@ -6,6 +6,7 @@ import psycopg
 from pgvector.psycopg import register_vector
 from psycopg import sql
 from psycopg.types.json import Json
+import hashlib
 
 # Load the model. It will use your GPU automatically if available.
 model = SentenceTransformer('BAAI/bge-m3')
@@ -68,6 +69,7 @@ def save_embeddings_to_pgvector(
     data_chunks,
     db_url=None,
     table_name="document_embeddings",
+    dedupe_similarity_threshold=None,
 ):
     """
     Save generated embeddings and their source chunks to a PostgreSQL pgvector table.
@@ -92,16 +94,18 @@ def save_embeddings_to_pgvector(
     if not db_url:
         raise ValueError("Provide db_url or set the DATABASE_URL environment variable")
 
+    if isinstance(embeddings[0], str):
+        raise ValueError("embeddings must be numeric vectors, got string data")
+
     embedding_dim = len(embeddings[0])
 
-    rows = [
-        (
-            chunk["content"],
-            Json(chunk.get("metadata", {})),
-            embedding.tolist() if hasattr(embedding, "tolist") else embedding,
-        )
-        for chunk, embedding in zip(data_chunks, embeddings)
-    ]
+    rows = []
+    for chunk, embedding in zip(data_chunks, embeddings):
+        content = chunk["content"]
+        metadata = Json(chunk.get("metadata", {}))
+        vector_value = embedding.tolist() if hasattr(embedding, "tolist") else embedding
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        rows.append((content, metadata, vector_value, content_hash))
 
     with psycopg.connect(db_url) as conn:
         register_vector(conn)
@@ -115,24 +119,83 @@ def save_embeddings_to_pgvector(
                     id BIGSERIAL PRIMARY KEY,
                     content TEXT NOT NULL,
                     metadata JSONB,
-                    embedding VECTOR({}) NOT NULL
+                    embedding VECTOR({}) NOT NULL,
+                    content_hash TEXT UNIQUE
                 )
                 """
                 ).format(sql.Identifier(table_name), sql.SQL(str(embedding_dim)))
             )
-            cur.executemany(
+            cur.execute(
                 sql.SQL(
                     """
-                INSERT INTO {} (content, metadata, embedding)
-                VALUES (%s, %s, %s)
+                CREATE INDEX IF NOT EXISTS {} ON {} USING ivfflat (embedding vector_cosine_ops)
                 """
-                ).format(sql.Identifier(table_name)),
-                rows,
+                ).format(
+                    sql.Identifier(f"{table_name}_embedding_idx"),
+                    sql.Identifier(table_name),
+                )
             )
+            insert_sql = sql.SQL(
+                """
+            INSERT INTO {} (content, metadata, embedding, content_hash)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (content_hash) DO NOTHING
+            """
+            ).format(sql.Identifier(table_name))
+
+            if dedupe_similarity_threshold is None:
+                cur.executemany(insert_sql, rows)
+            else:
+                for content, metadata, vector_value, content_hash in rows:
+                    cur.execute(
+                        sql.SQL(
+                            """
+                        SELECT 1
+                        FROM {}
+                        WHERE embedding <=> %s < %s
+                        LIMIT 1
+                        """
+                        ).format(sql.Identifier(table_name)),
+                        (vector_value, dedupe_similarity_threshold),
+                    )
+                    if cur.fetchone():
+                        continue
+                    cur.execute(insert_sql, (content, metadata, vector_value, content_hash))
 
         conn.commit()
 
     return len(rows)
+
+def semantic_search(db_url, query_text, limit=5, table_name="document_embeddings", min_similarity=0.2):
+    query_vector = model.encode(query_text)
+
+    with psycopg.connect(db_url) as conn:
+        register_vector(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    """
+                SELECT content, metadata, 1 - (embedding <=> %s) AS similarity
+                FROM {}
+                WHERE 1 - (embedding <=> %s) >= %s
+                ORDER BY similarity DESC
+                LIMIT %s
+                """
+                ).format(sql.Identifier(table_name)),
+                (query_vector, query_vector, min_similarity, limit),
+            )
+            rows = cur.fetchall()
+
+    results = []
+    for content, metadata, similarity in rows:
+        results.append(
+            {
+                "content": content,
+                "metadata": metadata,
+                "similarity": float(similarity),
+            }
+        )
+    return results
 
 # --- EXAMPLE USAGE ---
 # chunks = pdf_to_markdown_chunks("my_doc.pdf") # From our previous 'fitz' function

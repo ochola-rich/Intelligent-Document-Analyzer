@@ -12,6 +12,7 @@ sentence-transformers = "*"
 pymupdf = "*"
 pgvector = "*"
 psycopg = {extras = ["binary"], version = "*"}
+python-multipart = "*"
 
 [dev-packages]
 

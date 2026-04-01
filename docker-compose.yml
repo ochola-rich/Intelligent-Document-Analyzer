@@ -63,6 +63,7 @@ services:
     environment:
       WORD_SERVICE_URL: http://ml-service:8081/upload
       PDF_SERVICE_URL: http://ml-service:8081/upload
+      SEARCH_SERVICE_URL: http://ml-service:8081/search
     ports:
       - "8080:8080"
     healthcheck:

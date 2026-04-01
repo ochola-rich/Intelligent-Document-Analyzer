@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 var (
 	wordServiceURL = getEnv("WORD_SERVICE_URL", "http://localhost:9001/upload")
 	pdfServiceURL  = getEnv("PDF_SERVICE_URL", "http://localhost:9002/upload")
+	searchServiceURL = getEnv("SEARCH_SERVICE_URL", "http://localhost:8081/search")
 )
 
 type Document struct {
@@ -67,13 +69,33 @@ func HandleUpload(w http.ResponseWriter, r *http.Request) {
 	// 1. Get the dynamic URL based on file type
 	targetURL := Getmurl(file)
 
-	// 2. Forward the request (Simplified for clarity)
-	req, err := http.NewRequest("POST", targetURL, file)
+	// 2. Forward as multipart to preserve filename and content type
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", header.Filename)
+	if err != nil {
+		log.Printf("Error creating multipart part: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		log.Printf("Error copying file: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := writer.Close(); err != nil {
+		log.Printf("Error closing multipart writer: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	req, err := http.NewRequest("POST", targetURL, &body)
 	if err != nil {
 		log.Printf("Error creating request: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
@@ -132,6 +154,45 @@ func HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
+func handlesearch(w http.ResponseWriter, r *http.Request) {
+	setCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "failed to read request", http.StatusBadRequest)
+		return
+	}
+
+	req, err := http.NewRequest("POST", searchServiceURL, bytes.NewReader(body))
+	if err != nil {
+		http.Error(w, "failed to create request", http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("Error forwarding to %s: %v", searchServiceURL, err)
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer resp.Body.Close()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
 func HandleDocuments(w http.ResponseWriter, r *http.Request) {
 	setCORS(w)
 	if r.Method == http.MethodOptions {
@@ -155,6 +216,7 @@ func HandleDocuments(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	http.HandleFunc("/upload", HandleUpload)
+	http.HandleFunc("/search", handlesearch)
 	http.HandleFunc("/documents", HandleDocuments)
 	http.HandleFunc("/health", HandleHealth)
 	log.Println("Starting server on :8080")
