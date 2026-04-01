@@ -62,4 +62,4 @@ services:
         fromService:
           type: web
           name: ida-api-gateway
-          property: url
+          envVarKey: RENDER_EXTERNAL_URL
