@@ -47,7 +47,7 @@ services:
     runtime: static
     rootDir: ./frontend
     buildCommand: npm ci && npm run build
-    staticPublishPath: ./frontend/dist
+    staticPublishPath: ./dist
     pullRequestPreviewsEnabled: false
     headers:
       - path: /*
