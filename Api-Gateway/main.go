@@ -9,15 +9,17 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os" // Added to access Environment Variables
+	"strings"
 	"sync"
 	"time"
 )
 
 // Global or Struct-based Config
 var (
-	wordServiceURL = getEnv("WORD_SERVICE_URL", "http://localhost:9001/upload")
-	pdfServiceURL  = getEnv("PDF_SERVICE_URL", "http://localhost:9002/upload")
-	searchServiceURL = getEnv("SEARCH_SERVICE_URL", "http://localhost:8081/search")
+	wordServiceURL    = getEnv("WORD_SERVICE_URL", "http://localhost:9001/upload")
+	pdfServiceURL     = getEnv("PDF_SERVICE_URL", "http://localhost:9002/upload")
+	searchServiceURL  = getEnv("SEARCH_SERVICE_URL", "http://localhost:8081/search")
+	jobServiceBaseURL = getEnv("JOB_SERVICE_BASE_URL", strings.TrimSuffix(searchServiceURL, "/search"))
 )
 
 type Document struct {
@@ -26,6 +28,21 @@ type Document struct {
 	Status    string `json:"status"`
 	SizeBytes int64  `json:"sizeBytes"`
 	Date      string `json:"date"`
+	JobID     string `json:"-"`
+}
+
+type UploadResponse struct {
+	ID        string `json:"id"`
+	Status    string `json:"status"`
+	Filename  string `json:"filename"`
+	CreatedAt string `json:"created_at"`
+}
+
+type JobStatusResponse struct {
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	Error       string `json:"error"`
+	CompletedAt string `json:"completed_at"`
 }
 
 var (
@@ -106,26 +123,47 @@ func HandleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "failed to read upstream response", http.StatusBadGateway)
+		return
+	}
+
 	fmt.Printf("Forwarded to %s | Status: %s\n", targetURL, resp.Status)
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write([]byte("File processed"))
+	_, _ = w.Write(responseBody)
 
 	docStatus := "failed"
+	jobID := ""
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		docStatus = "processed"
 	}
 
+	var uploadPayload UploadResponse
+	if err := json.Unmarshal(responseBody, &uploadPayload); err == nil {
+		if uploadPayload.Status != "" {
+			docStatus = uploadPayload.Status
+		}
+		jobID = uploadPayload.ID
+	}
+
+	doc := Document{
+		ID:        time.Now().UnixNano(),
+		Filename:  header.Filename,
+		Status:    docStatus,
+		SizeBytes: header.Size,
+		Date:      time.Now().Format("2006-01-02"),
+		JobID:     jobID,
+	}
+
 	documentsMu.Lock()
-	documents = append([]Document{
-		{
-			ID:        time.Now().UnixNano(),
-			Filename:  header.Filename,
-			Status:    docStatus,
-			SizeBytes: header.Size,
-			Date:      time.Now().Format("2006-01-02"),
-		},
-	}, documents...)
+	documents = append([]Document{doc}, documents...)
 	documentsMu.Unlock()
+
+	if jobID != "" && (docStatus == "queued" || docStatus == "processing") {
+		go watchJobStatus(doc.ID, jobID)
+	}
 }
 
 func Getmurl(file multipart.File) string {
@@ -214,11 +252,56 @@ func HandleDocuments(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+func watchJobStatus(documentID int64, jobID string) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	jobURL := fmt.Sprintf("%s/jobs/%s", jobServiceBaseURL, jobID)
+
+	for attempt := 0; attempt < 120; attempt++ {
+		resp, err := client.Get(jobURL)
+		if err != nil {
+			log.Printf("Error polling job %s: %v", jobID, err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		var job JobStatusResponse
+		decodeErr := json.NewDecoder(resp.Body).Decode(&job)
+		resp.Body.Close()
+		if decodeErr != nil {
+			log.Printf("Error decoding job %s: %v", jobID, decodeErr)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		updateDocumentStatus(documentID, job.Status)
+
+		if job.Status == "processed" || job.Status == "failed" {
+			return
+		}
+
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func updateDocumentStatus(documentID int64, status string) {
+	documentsMu.Lock()
+	defer documentsMu.Unlock()
+
+	for i := range documents {
+		if documents[i].ID == documentID {
+			documents[i].Status = status
+			return
+		}
+	}
+}
+
 func main() {
+	port := getEnv("PORT", "8080")
+
 	http.HandleFunc("/upload", HandleUpload)
 	http.HandleFunc("/search", handlesearch)
 	http.HandleFunc("/documents", HandleDocuments)
 	http.HandleFunc("/health", HandleHealth)
-	log.Println("Starting server on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Printf("Starting server on :%s", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }

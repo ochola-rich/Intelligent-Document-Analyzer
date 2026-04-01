@@ -15,7 +15,19 @@ import {
   Info
 } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8080';
+const API_BASE = (import.meta.env.VITE_API_BASE || 'http://localhost:8080').replace(/\/$/, '');
+const MODEL_OPTIONS = [
+  {
+    id: 'semantic-search',
+    label: 'Semantic Search',
+    helper: 'Shows the top matching chunks from your indexed documents.'
+  },
+  {
+    id: 'contextual-rag',
+    label: 'Contextual RAG',
+    helper: 'Builds a grounded answer from retrieved document context.'
+  }
+];
 
 const App = () => {
   const [activeTab, setActiveTab] = useState('documents');
@@ -24,6 +36,7 @@ const App = () => {
   const [isTyping, setIsTyping] = useState(false);
   const [chatHistory, setChatHistory] = useState([]);
   const [accuracyLevel, setAccuracyLevel] = useState('medium');
+  const [selectedModel, setSelectedModel] = useState('semantic-search');
   const chatEndRef = useRef(null);
 
   useEffect(() => {
@@ -47,7 +60,11 @@ const App = () => {
 
   useEffect(() => {
     fetchDocuments();
+    const intervalId = window.setInterval(fetchDocuments, 5000);
+    return () => window.clearInterval(intervalId);
   }, []);
+
+  const activeModel = MODEL_OPTIONS.find((option) => option.id === selectedModel) || MODEL_OPTIONS[0];
 
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -117,6 +134,7 @@ const App = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query,
+          model: selectedModel,
           min_similarity:
             accuracyLevel === 'low'
               ? 0.25
@@ -134,16 +152,27 @@ const App = () => {
 
       const data = await res.json();
       const results = Array.isArray(data.results) ? data.results : [];
-      const assistantMessage = results.length
-        ? {
-            role: 'assistant',
-            type: 'search',
-            results: results.slice(0, 5)
-          }
-        : {
-            role: 'assistant',
-            content: 'No relevant results found.'
-          };
+      const assistantMessage =
+        selectedModel === 'contextual-rag'
+          ? {
+              role: 'assistant',
+              type: 'contextual-rag',
+              model: selectedModel,
+              content: data.answer || 'No grounded answer could be generated from the retrieved context.',
+              results: results.slice(0, 5)
+            }
+          : results.length
+            ? {
+                role: 'assistant',
+                type: 'search',
+                model: selectedModel,
+                results: results.slice(0, 5)
+              }
+            : {
+                role: 'assistant',
+                model: selectedModel,
+                content: 'No relevant results found.'
+              };
       setChatHistory((prev) => [...prev, assistantMessage]);
     } catch (err) {
       const assistantMessage = {
@@ -158,11 +187,13 @@ const App = () => {
 
   const StatusBadge = ({ status }) => {
     const styles = {
+      queued: 'bg-sky-100 text-sky-700 border-sky-200',
       processed: 'bg-emerald-100 text-emerald-700 border-emerald-200',
       processing: 'bg-amber-100 text-amber-700 border-amber-200',
       failed: 'bg-rose-100 text-rose-700 border-rose-200'
     };
     const icons = {
+      queued: <Clock size={14} />,
       processed: <CheckCircle2 size={14} />,
       processing: <Clock size={14} className="animate-spin" />,
       failed: <AlertCircle size={14} />
@@ -190,7 +221,7 @@ const App = () => {
           {[
             { id: 'documents', icon: FileText, label: 'Library' },
             { id: 'chat', icon: MessageSquare, label: 'RAG Chat' },
-            { id: 'analytics', icon: BarChart3, label: 'Analytics' },
+            { id: 'analytics', icon: BarChart3, label: 'Insights' },
             { id: 'settings', icon: Settings, label: 'Settings' }
           ].map((item) => (
             <button
@@ -212,8 +243,8 @@ const App = () => {
           <div className="bg-slate-800/50 rounded-xl p-3 flex items-center gap-3">
             <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-500 to-teal-400" />
             <div className="text-xs">
-              <p className="text-white font-medium">Dev Instance</p>
-              <p className="text-slate-500">Local Environment</p>
+              <p className="text-white font-medium">{import.meta.env.PROD ? 'Production Instance' : 'Development Instance'}</p>
+              <p className="text-slate-500">{import.meta.env.PROD ? 'Render Static Frontend' : 'Local Environment'}</p>
             </div>
           </div>
         </div>
@@ -244,7 +275,7 @@ const App = () => {
               <div className="flex items-center justify-between mb-8">
                 <div>
                   <h2 className="text-2xl font-bold text-slate-800">Document Library</h2>
-                  <p className="text-slate-500 mt-1">Manage your polyglot-processed ingestion pipeline.</p>
+                  <p className="text-slate-500 mt-1">Manage documents indexed by the lean Go and Python deployment.</p>
                 </div>
               </div>
 
@@ -304,7 +335,7 @@ const App = () => {
             <div className="max-w-4xl mx-auto h-full flex flex-col animate-in fade-in duration-500">
               <div className="mb-6">
                 <h2 className="text-2xl font-bold text-slate-800">Intelligent RAG Assistant</h2>
-                <p className="text-slate-500 mt-1">Semantic search query across your processed knowledge base.</p>
+                <p className="text-slate-500 mt-1">Run semantic and grounded search across your processed document library.</p>
               </div>
 
               <div className="flex-1 bg-white border border-slate-200 rounded-2xl shadow-sm flex flex-col overflow-hidden">
@@ -343,6 +374,34 @@ const App = () => {
                               })}
                             </div>
                           </div>
+                        ) : msg.type === 'contextual-rag' ? (
+                          <div className="space-y-4 text-sm leading-relaxed">
+                            <div>
+                              <p className="text-xs uppercase tracking-wide text-slate-500">Grounded Answer</p>
+                              <p className="mt-2 whitespace-pre-wrap">{msg.content}</p>
+                            </div>
+                            <div className="rounded-xl border border-slate-200 bg-white/80 p-3">
+                              <p className="text-xs uppercase tracking-wide text-slate-500 mb-2">Retrieved Context</p>
+                              <div className="space-y-3">
+                                {msg.results?.map((item, rIdx) => {
+                                  const page = item?.metadata?.page ? `p.${item.metadata.page}` : 'p.?';
+                                  const source = item?.metadata?.source || 'unknown source';
+                                  const score =
+                                    typeof item.similarity === 'number'
+                                      ? `${(item.similarity * 100).toFixed(1)}%`
+                                      : 'n/a';
+                                  return (
+                                    <div key={rIdx} className="rounded-lg border border-slate-200 bg-white p-3 text-slate-800">
+                                      <div className="text-xs text-slate-500 mb-1">
+                                        {source} • {page} • score {score}
+                                      </div>
+                                      <div className="whitespace-pre-wrap">{item.content}</div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
                         ) : (
                           <p className="text-sm leading-relaxed whitespace-pre-wrap">{msg.content}</p>
                         )}
@@ -353,7 +412,11 @@ const App = () => {
                     <div className="flex justify-start">
                       <div className="bg-slate-100 rounded-2xl rounded-tl-none p-4 flex items-center gap-2">
                         <Loader2 size={16} className="animate-spin text-slate-400" />
-                        <span className="text-xs text-slate-500">Consulting vector database...</span>
+                        <span className="text-xs text-slate-500">
+                          {selectedModel === 'contextual-rag'
+                            ? 'Retrieving context and assembling a grounded answer...'
+                            : 'Consulting vector database...'}
+                        </span>
                       </div>
                     </div>
                   )}
@@ -361,11 +424,31 @@ const App = () => {
                 </div>
 
                 <form onSubmit={handleSendMessage} className="p-4 border-t border-slate-100 bg-slate-50/50">
+                  <div className="mb-3 flex items-center gap-2 text-xs text-slate-500">
+                    <label className="font-semibold text-slate-600" htmlFor="model-select">Model</label>
+                    <select
+                      id="model-select"
+                      value={selectedModel}
+                      onChange={(e) => setSelectedModel(e.target.value)}
+                      className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-700"
+                    >
+                      {MODEL_OPTIONS.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-slate-400">{activeModel.helper}</span>
+                  </div>
                   <div className="relative flex items-center gap-2">
                     <input
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
-                      placeholder="Ask about revenue, technical architecture, or summary..."
+                      placeholder={
+                        selectedModel === 'contextual-rag'
+                          ? 'Ask a question for a context-grounded answer...'
+                          : 'Ask about revenue, technical architecture, or summary...'
+                      }
                       className="flex-1 bg-white border border-slate-200 rounded-xl py-3 px-4 pr-12 text-sm shadow-inner focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
                     />
                     <button
@@ -396,9 +479,7 @@ const App = () => {
                       <option value="very-high">Very High</option>
                     </select>
                   </div>
-                  <p className="text-[10px] text-center text-slate-400 mt-2">
-                    Powered by Python RAG Core & Go API Gateway
-                  </p>
+                  <p className="text-[10px] text-center text-slate-400 mt-2">Powered by the Python RAG core and Go API gateway.</p>
                 </form>
               </div>
             </div>
@@ -406,12 +487,12 @@ const App = () => {
 
           {activeTab === 'analytics' && (
             <div className="max-w-6xl mx-auto animate-in zoom-in-95 duration-500">
-              <h2 className="text-2xl font-bold text-slate-800 mb-8">Metadata Insights</h2>
+              <h2 className="text-2xl font-bold text-slate-800 mb-8">Pipeline Insights</h2>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                 {[
                   { label: 'Total Docs', value: documents.length.toString(), change: '+0%', badge: 'blue' },
-                  { label: 'Avg Ingestion Time', value: 'n/a', change: 'n/a', badge: 'emerald' },
-                  { label: 'Vector Queries', value: 'n/a', change: 'n/a', badge: 'amber' }
+                  { label: 'Indexer Mode', value: 'Lean', change: 'Go + Python', badge: 'emerald' },
+                  { label: 'Vector Queries', value: 'Live', change: 'pgvector', badge: 'amber' }
                 ].map((stat, i) => {
                   const badgeClasses = {
                     blue: 'bg-blue-50 text-blue-600',
@@ -435,8 +516,8 @@ const App = () => {
 
               <div className="mt-8 bg-white p-8 rounded-2xl border border-slate-200 shadow-sm h-64 flex flex-col items-center justify-center text-slate-400">
                 <BarChart3 size={48} className="mb-4 opacity-20" />
-                <p>Advanced Java Analytics Visualization Engine</p>
-                <p className="text-xs mt-1">Connect to http://localhost:8082/analytics to populate</p>
+                <p>Telemetry is intentionally minimal in this deployment profile.</p>
+                <p className="text-xs mt-1">Add analytics later once the core ingestion flow is stable in production.</p>
               </div>
             </div>
           )}

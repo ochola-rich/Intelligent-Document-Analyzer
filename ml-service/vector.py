@@ -1,22 +1,34 @@
-from sentence_transformers import SentenceTransformer
 import os
 import pickle
 import torch
 import psycopg
+from sentence_transformers import SentenceTransformer
 from pgvector.psycopg import register_vector
 from psycopg import sql
 from psycopg.types.json import Json
 import hashlib
 
-# Load the model. It will use your GPU automatically if available.
-model = SentenceTransformer('BAAI/bge-m3')
+DEFAULT_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+_model = None
+_model_name = None
 
-# Check if it's using CUDA (NVIDIA GPU) or CPU
-print(f"Device: {model.device}")
 
-def generate_bge_embeddings(data_chunks, model_name='BAAI/bge-m3', save_path="vector_cache.pkl"):
+def get_model(model_name: str = DEFAULT_MODEL_NAME):
+    global _model, _model_name
+    if model_name != _model_name:
+        _model = None
+
+    if _model is None:
+        print(f"--- Loading {model_name} (this may take a minute) ---")
+        _model = SentenceTransformer(model_name)
+        _model_name = model_name
+        print(f"Device: {_model.device}")
+    return _model
+
+
+def generate_bge_embeddings(data_chunks, model_name=DEFAULT_MODEL_NAME, save_path="vector_cache.pkl"):
     """
-    Converts PDF text chunks into BGE-M3 embeddings.
+    Converts PDF text chunks into sentence embeddings.
     
     Args:
         data_chunks (list): List of dicts with 'content' and 'metadata'
@@ -34,9 +46,8 @@ def generate_bge_embeddings(data_chunks, model_name='BAAI/bge-m3', save_path="ve
             cached_data = pickle.load(f)
         return cached_data['embeddings'], cached_data['chunks']
 
-    # 2. Load Model (Detects GPU automatically)
-    print(f"--- Loading {model_name} (this may take a minute) ---")
-    model = SentenceTransformer(model_name)
+    # 2. Load Model on demand so service startup stays fast/healthy
+    model = get_model(model_name)
     
     # Optional: Use FP16 for speed if on GPU
     if torch.cuda.is_available():
@@ -167,6 +178,7 @@ def save_embeddings_to_pgvector(
     return len(rows)
 
 def semantic_search(db_url, query_text, limit=5, table_name="document_embeddings", min_similarity=0.2):
+    model = get_model()
     query_vector = model.encode(query_text)
 
     with psycopg.connect(db_url) as conn:
