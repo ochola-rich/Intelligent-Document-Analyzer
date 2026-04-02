@@ -28,19 +28,26 @@ def set_job_state(job_id: str, **updates) -> dict:
         return dict(merged)
 
 
-def process_pdf_job(tmp_path: str, file_hash: str):
+def process_pdf_job(tmp_path: str, file_hash: str, source_name: str):
     try:
-        processed_pages = pdf_to_markdown_chunks(tmp_path)
+        processed_pages = pdf_to_markdown_chunks(tmp_path, source_name=source_name)
         cache_path = f"/tmp/vector_cache_{file_hash}.pkl"
         embeddings, data_chunks = vector.generate_bge_embeddings(processed_pages, save_path=cache_path)
         print(f"Generated {len(embeddings)} embeddings for {len(data_chunks)} chunks")
-        inserted_rows = vector.save_embeddings_to_pgvector(embeddings, data_chunks)
-        print(f"Inserted {inserted_rows} rows into pgvector")
+        inserted_rows = 0
+        warning = None
+        db_url = os.getenv("DATABASE_URL")
+        if db_url:
+            inserted_rows = vector.save_embeddings_to_pgvector(embeddings, data_chunks, db_url=db_url)
+            print(f"Inserted {inserted_rows} rows into pgvector")
+        else:
+            warning = "DATABASE_URL not set; embeddings were generated but not stored in pgvector"
+            print(warning)
         return {
             "status": "processed",
             "pages": len(processed_pages),
             "inserted_rows": inserted_rows,
-            "error": None,
+            "error": warning,
         }
     except Exception as exc:
         print(f"Background processing failed for {tmp_path}: {exc}")
@@ -97,7 +104,7 @@ async def upload_pdf(file: UploadFile = File(...)):
         error=None,
     )
     job = set_job_state(job_id, status="processing", started_at=utc_now())
-    future = job_executor.submit(process_pdf_job, tmp_path, file_hash)
+    future = job_executor.submit(process_pdf_job, tmp_path, file_hash, safe_name)
     future.add_done_callback(lambda completed_future: finalize_job(job_id, completed_future))
     return JSONResponse(status_code=202, content=job)
 
@@ -166,6 +173,20 @@ def get_job(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
     return job
+
+
+@app.delete("/documents/{source_name:path}")
+def delete_document(source_name: str):
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        return {
+            "deleted_rows": 0,
+            "source": source_name,
+            "warning": "DATABASE_URL not set; no pgvector rows were removed",
+        }
+
+    deleted_rows = vector.delete_document_embeddings(db_url, source_name)
+    return {"deleted_rows": deleted_rows, "source": source_name}
 
 
 @app.get("/health")

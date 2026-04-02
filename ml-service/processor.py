@@ -1,8 +1,12 @@
+import os
+
 import fitz
 
-def pdf_to_markdown_chunks(pdf_path):
+
+def pdf_to_markdown_chunks(pdf_path, source_name=None):
     doc = fitz.open(pdf_path)
     final_data = []
+    source_value = source_name or os.path.basename(pdf_path)
 
     for page_index, page in enumerate(doc):
         # 1. Get the tables on the page
@@ -35,7 +39,7 @@ def pdf_to_markdown_chunks(pdf_path):
 
         final_data.append({
             "content": page_text,
-            "metadata": {"page": page_index + 1, "source": pdf_path}
+            "metadata": {"page": page_index + 1, "source": source_value}
         })
         
     return final_data

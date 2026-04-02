@@ -113,8 +113,8 @@ docker-compose up --build
 Access services:
 
 * Go Gateway: [http://localhost:8080/health](http://localhost:8080/health)
-* Java Analytics: [http://localhost:8081/health](http://localhost:8081/health)
-* Python ML: [http://localhost:8082/health](http://localhost:8082/health)
+* Java Analytics: [http://localhost:8082/health](http://localhost:8082/health)
+* Python ML: [http://localhost:8081/health](http://localhost:8081/health)
 * Frontend: [http://localhost:5173](http://localhost:5173)
 
 ---
@@ -182,4 +182,3 @@ It serves as a strong template for real-world AI infrastructure used in finance,
 ## License
 
 This project is released under the MIT License. You may use, modify, and distribute it freely.
-

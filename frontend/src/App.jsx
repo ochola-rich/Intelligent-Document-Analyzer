@@ -110,6 +110,8 @@ function App() {
   const [view, setView] = useState('landing');
   const [activeTab, setActiveTab] = useState('documents');
   const [documents, setDocuments] = useState([]);
+  const [openActionMenuId, setOpenActionMenuId] = useState(null);
+  const [documentActionState, setDocumentActionState] = useState({});
   const [query, setQuery] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [chatHistory, setChatHistory] = useState([
@@ -131,24 +133,24 @@ function App() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory, isTyping]);
 
+  const fetchDocuments = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/documents`);
+      if (!res.ok) {
+        return;
+      }
+
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        setDocuments(data);
+      }
+    } catch (error) {
+      // Keep the current state when the backend is unavailable.
+    }
+  };
+
   useEffect(() => {
     let intervalId;
-
-    const fetchDocuments = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/documents`);
-        if (!res.ok) {
-          return;
-        }
-
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          setDocuments(data);
-        }
-      } catch (error) {
-        // Keep the current state when the backend is unavailable.
-      }
-    };
 
     fetchDocuments();
     intervalId = window.setInterval(fetchDocuments, 5000);
@@ -187,19 +189,70 @@ function App() {
         throw new Error('Upload failed');
       }
 
-      const refreshed = await fetch(`${API_BASE}/documents`);
-      if (refreshed.ok) {
-        const payload = await refreshed.json();
-        if (Array.isArray(payload)) {
-          setDocuments(payload);
-        }
-      }
+      await fetchDocuments();
     } catch (error) {
       setDocuments((prev) =>
         prev.map((doc) => (doc.id === optimisticDocument.id ? { ...doc, status: 'failed' } : doc)),
       );
     } finally {
       event.target.value = '';
+    }
+  };
+
+  const setActionLoading = (documentId, action) => {
+    setDocumentActionState((prev) => ({ ...prev, [documentId]: action }));
+  };
+
+  const clearActionLoading = (documentId) => {
+    setDocumentActionState((prev) => {
+      const next = { ...prev };
+      delete next[documentId];
+      return next;
+    });
+  };
+
+  const handleRetryDocument = async (documentId) => {
+    setOpenActionMenuId(null);
+    setActionLoading(documentId, 'retry');
+    setDocuments((prev) =>
+      prev.map((doc) => (doc.id === documentId ? { ...doc, status: 'processing' } : doc)),
+    );
+
+    try {
+      const response = await fetch(`${API_BASE}/documents/${documentId}/retry`, {
+        method: 'POST',
+      });
+
+      if (!response.ok) {
+        throw new Error('Retry failed');
+      }
+
+      await fetchDocuments();
+    } catch (error) {
+      setDocuments((prev) =>
+        prev.map((doc) => (doc.id === documentId ? { ...doc, status: 'failed' } : doc)),
+      );
+    } finally {
+      clearActionLoading(documentId);
+    }
+  };
+
+  const handleDeleteDocument = async (documentId) => {
+    setOpenActionMenuId(null);
+    setActionLoading(documentId, 'delete');
+
+    try {
+      const response = await fetch(`${API_BASE}/documents/${documentId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        throw new Error('Delete failed');
+      }
+
+      setDocuments((prev) => prev.filter((doc) => doc.id !== documentId));
+    } finally {
+      clearActionLoading(documentId);
     }
   };
 
@@ -629,7 +682,14 @@ function App() {
                         </tr>
                       )}
 
-                      {documents.map((doc) => (
+                      {documents.map((doc) => {
+                        const isMenuOpen = openActionMenuId === doc.id;
+                        const actionInFlight = documentActionState[doc.id];
+                        const isBusy = Boolean(actionInFlight);
+                        const canRetry = doc.status === 'failed';
+                        const canDelete = doc.status !== 'processing' && doc.status !== 'queued';
+
+                        return (
                         <tr key={doc.id} className="transition-colors hover:bg-slate-50">
                           <td className="px-6 py-5">
                             <div className="flex items-center gap-4 font-semibold text-slate-800">
@@ -646,13 +706,44 @@ function App() {
                             {formatBytes(doc.sizeBytes, doc.size || 'n/a')}
                           </td>
                           <td className="px-6 py-5 text-sm font-medium text-slate-500">{doc.date || 'n/a'}</td>
-                          <td className="px-6 py-5 text-right">
-                            <button className="rounded-xl p-2 text-slate-300 transition-colors hover:text-slate-600">
-                              <MoreVertical size={18} />
+                          <td className="relative px-6 py-5 text-right">
+                            <button
+                              type="button"
+                              disabled={isBusy}
+                              onClick={() => setOpenActionMenuId((current) => (current === doc.id ? null : doc.id))}
+                              className="rounded-xl p-2 text-slate-300 transition-colors hover:text-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {isBusy ? <Loader2 size={18} className="animate-spin" /> : <MoreVertical size={18} />}
                             </button>
+                            {isMenuOpen && (
+                              <div className="absolute right-6 top-14 z-10 min-w-40 rounded-2xl border border-slate-200 bg-white p-2 text-left shadow-[0_20px_50px_rgba(15,23,42,0.12)]">
+                                {canRetry && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRetryDocument(doc.id)}
+                                    className="flex w-full rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-sky-50 hover:text-sky-700"
+                                  >
+                                    Retry Upload
+                                  </button>
+                                )}
+                                {canDelete && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteDocument(doc.id)}
+                                    className="flex w-full rounded-xl px-3 py-2 text-sm font-semibold text-rose-600 transition-colors hover:bg-rose-50"
+                                  >
+                                    Delete File
+                                  </button>
+                                )}
+                                {!canRetry && !canDelete && (
+                                  <p className="px-3 py-2 text-sm text-slate-400">No actions available yet.</p>
+                                )}
+                              </div>
+                            )}
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

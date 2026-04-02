@@ -2,6 +2,7 @@ import os
 import pickle
 import torch
 import psycopg
+import re
 from sentence_transformers import SentenceTransformer
 from pgvector.psycopg import register_vector
 from psycopg import sql
@@ -11,6 +12,63 @@ import hashlib
 DEFAULT_MODEL_NAME = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 _model = None
 _model_name = None
+
+
+def get_table_embedding_dim(conn, table_name: str) -> int | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT format_type(a.atttypid, a.atttypmod)
+            FROM pg_attribute a
+            JOIN pg_class c ON a.attrelid = c.oid
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE c.relname = %s
+              AND n.nspname = current_schema()
+              AND a.attname = 'embedding'
+              AND NOT a.attisdropped
+            """,
+            (table_name,),
+        )
+        row = cur.fetchone()
+
+    if not row or not row[0]:
+        return None
+
+    match = re.search(r"vector\((\d+)\)", row[0])
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def resolve_table_name(conn, base_table_name: str, embedding_dim: int) -> str:
+    configured_table = os.getenv("VECTOR_TABLE_NAME", base_table_name)
+    existing_dim = get_table_embedding_dim(conn, configured_table)
+
+    if existing_dim is None or existing_dim == embedding_dim:
+        return configured_table
+
+    fallback_table = f"{configured_table}_{embedding_dim}"
+    return fallback_table
+
+
+def list_vector_tables(conn, base_table_name: str) -> list[str]:
+    configured_table = os.getenv("VECTOR_TABLE_NAME", base_table_name)
+    pattern = f"{configured_table}%"
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT c.relname
+            FROM pg_class c
+            JOIN pg_namespace n ON c.relnamespace = n.oid
+            WHERE c.relkind = 'r'
+              AND n.nspname = current_schema()
+              AND c.relname LIKE %s
+            ORDER BY c.relname
+            """,
+            (pattern,),
+        )
+        return [row[0] for row in cur.fetchall()]
 
 
 def get_model(model_name: str = DEFAULT_MODEL_NAME):
@@ -120,6 +178,7 @@ def save_embeddings_to_pgvector(
 
     with psycopg.connect(db_url) as conn:
         register_vector(conn)
+        resolved_table_name = resolve_table_name(conn, table_name, embedding_dim)
 
         with conn.cursor() as cur:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -134,7 +193,7 @@ def save_embeddings_to_pgvector(
                     content_hash TEXT UNIQUE
                 )
                 """
-                ).format(sql.Identifier(table_name), sql.SQL(str(embedding_dim)))
+                ).format(sql.Identifier(resolved_table_name), sql.SQL(str(embedding_dim)))
             )
             cur.execute(
                 sql.SQL(
@@ -142,8 +201,8 @@ def save_embeddings_to_pgvector(
                 CREATE INDEX IF NOT EXISTS {} ON {} USING ivfflat (embedding vector_cosine_ops)
                 """
                 ).format(
-                    sql.Identifier(f"{table_name}_embedding_idx"),
-                    sql.Identifier(table_name),
+                    sql.Identifier(f"{resolved_table_name}_embedding_idx"),
+                    sql.Identifier(resolved_table_name),
                 )
             )
             insert_sql = sql.SQL(
@@ -152,7 +211,7 @@ def save_embeddings_to_pgvector(
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (content_hash) DO NOTHING
             """
-            ).format(sql.Identifier(table_name))
+            ).format(sql.Identifier(resolved_table_name))
 
             if dedupe_similarity_threshold is None:
                 cur.executemany(insert_sql, rows)
@@ -166,7 +225,7 @@ def save_embeddings_to_pgvector(
                         WHERE embedding <=> %s < %s
                         LIMIT 1
                         """
-                        ).format(sql.Identifier(table_name)),
+                        ).format(sql.Identifier(resolved_table_name)),
                         (vector_value, dedupe_similarity_threshold),
                     )
                     if cur.fetchone():
@@ -180,9 +239,11 @@ def save_embeddings_to_pgvector(
 def semantic_search(db_url, query_text, limit=5, table_name="document_embeddings", min_similarity=0.2):
     model = get_model()
     query_vector = model.encode(query_text)
+    embedding_dim = len(query_vector)
 
     with psycopg.connect(db_url) as conn:
         register_vector(conn)
+        resolved_table_name = resolve_table_name(conn, table_name, embedding_dim)
         with conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
@@ -193,7 +254,7 @@ def semantic_search(db_url, query_text, limit=5, table_name="document_embeddings
                 ORDER BY similarity DESC
                 LIMIT %s
                 """
-                ).format(sql.Identifier(table_name)),
+                ).format(sql.Identifier(resolved_table_name)),
                 (query_vector, query_vector, min_similarity, limit),
             )
             rows = cur.fetchall()
@@ -208,6 +269,34 @@ def semantic_search(db_url, query_text, limit=5, table_name="document_embeddings
             }
         )
     return results
+
+
+def delete_document_embeddings(db_url, source_name, table_name="document_embeddings"):
+    if not db_url:
+        raise ValueError("Provide db_url or set the DATABASE_URL environment variable")
+
+    deleted_rows = 0
+
+    with psycopg.connect(db_url) as conn:
+        register_vector(conn)
+        table_names = list_vector_tables(conn, table_name)
+
+        with conn.cursor() as cur:
+            for candidate_table in table_names:
+                cur.execute(
+                    sql.SQL(
+                        """
+                        DELETE FROM {}
+                        WHERE metadata->>'source' = %s
+                        """
+                    ).format(sql.Identifier(candidate_table)),
+                    (source_name,),
+                )
+                deleted_rows += cur.rowcount
+
+        conn.commit()
+
+    return deleted_rows
 
 # --- EXAMPLE USAGE ---
 # chunks = pdf_to_markdown_chunks("my_doc.pdf") # From our previous 'fitz' function

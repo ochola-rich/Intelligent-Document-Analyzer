@@ -136,9 +136,8 @@ func TestHandleUploadForwardsToPDFService(t *testing.T) {
 	}
 }
 
-func TestGetmurlDefaultsToPDFService(t *testing.T) {
-	file := readSeekCloser{Reader: bytes.NewReader([]byte("plain text"))}
-	if got := Getmurl(file); got != "http://pdf-service/upload" {
-		t.Fatalf("Getmurl = %q, want %q", got, "http://pdf-service/upload")
+func TestDetectTargetURLDefaultsToPDFService(t *testing.T) {
+	if got := detectTargetURL([]byte("plain text")); got != "http://pdf-service/upload" {
+		t.Fatalf("detectTargetURL = %q, want %q", got, "http://pdf-service/upload")
 	}
 }
