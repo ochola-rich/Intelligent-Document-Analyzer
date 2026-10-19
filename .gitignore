@@ -21,3 +21,24 @@ ENV/
 Thumbs.db
 ml-service/debug_pipeline.ipynb
 ml-service/*.pkl
+
+# IDE & Tooling
+.codex
+.vscode/
+.idea/
+
+# Caches & Build Artifacts
+.cache/
+*/.cache/
+.m2/
+*/.m2/
+target/
+*/target/
+node_modules/
+*/node_modules/
+dist/
+*/dist/
+
+# Uploads & Temporary Data
+uploads/
+*/uploads/

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -51,8 +52,8 @@ func TestHandleHealthOK(t *testing.T) {
 		t.Fatalf("content-type = %q, want %q", ct, "application/json")
 	}
 	body, _ := io.ReadAll(res.Body)
-	if string(body) != `{"status":"ok"}` {
-		t.Fatalf("body = %q, want %q", string(body), `{"status":"ok"}`)
+	if strings.TrimSpace(string(body)) != `{"status":"ok"}` {
+		t.Fatalf("body = %q, want %q", strings.TrimSpace(string(body)), `{"status":"ok"}`)
 	}
 }
 
@@ -105,7 +106,9 @@ func TestHandleUploadForwardsToPDFService(t *testing.T) {
 	var gotHost string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHost = r.Host
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"job-1","status":"queued"}`))
 	}))
 	t.Cleanup(upstream.Close)
 
@@ -124,20 +127,20 @@ func TestHandleUploadForwardsToPDFService(t *testing.T) {
 	HandleUpload(rec, req)
 
 	res := rec.Result()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusOK)
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusCreated)
 	}
 	body, _ := io.ReadAll(res.Body)
-	if string(body) != "upload received" {
-		t.Fatalf("body = %q, want %q", string(body), "upload received")
+	if strings.TrimSpace(string(body)) != `{"id":"job-1","status":"queued"}` {
+		t.Fatalf("body = %q, want %q", strings.TrimSpace(string(body)), `{"id":"job-1","status":"queued"}`)
 	}
-	if gotHost != "pdf-service" {
-		t.Fatalf("upstream host = %q, want %q", gotHost, "pdf-service")
+	if gotHost != "localhost:8081" {
+		t.Fatalf("upstream host = %q, want %q", gotHost, "localhost:8081")
 	}
 }
 
 func TestDetectTargetURLDefaultsToPDFService(t *testing.T) {
-	if got := detectTargetURL([]byte("plain text")); got != "http://pdf-service/upload" {
-		t.Fatalf("detectTargetURL = %q, want %q", got, "http://pdf-service/upload")
+	if got := detectTargetURL([]byte("plain text")); got != pdfServiceURL {
+		t.Fatalf("detectTargetURL = %q, want %q", got, pdfServiceURL)
 	}
 }

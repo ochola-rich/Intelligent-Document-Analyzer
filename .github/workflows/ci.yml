@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-gateway:
+    name: Test Go API Gateway
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Run Go Gateway Tests
+        working-directory: ./Api-Gateway
+        run: |
+          go test -v ./...
+
+  test-ml-service:
+    name: Test Python ML Service
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        working-directory: ./ml-service
+        run: |
+          pip install --no-cache-dir fastapi uvicorn pydantic requests httpx pytest
+
+      - name: Run Unit Tests
+        working-directory: ./ml-service
+        run: |
+          pytest -v test_main.py
